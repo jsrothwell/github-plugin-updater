@@ -30,20 +30,47 @@ class GitHub_Plugin_Updater_Settings {
         );
     }
 
-    /**
-     * Options page callback
-     */
-    public function create_admin_page() {
-        // Check for 'scan' transient which indicates a fresh scan
-        $scanned = get_transient( 'github_updater_scanned' );
-        if ( $scanned ) {
-            delete_transient( 'github_updater_scanned' );
-            ?>
-            <div class="notice notice-info is-dismissible">
-                <p><strong>Plugin list refreshed!</strong> New plugins have been added to the configuration table below.</p>
-            </div>
-            <?php
-        }
+    // In includes/class-github-updater-settings.php
+
+  // ... inside create_admin_page() method
+
+          // Options page callback
+          public function create_admin_page() {
+              // ... (transient notice code remains the same) ...
+              ?>
+              <div class="wrap">
+                  <h1>GitHub Plugin Updater Settings</h1>
+                  <p>Configure which installed plugins should receive updates directly from GitHub.</p>
+
+                  <form method="post" action="options.php">
+                  <?php
+                      settings_fields( 'github_updater_option_group' );
+                      do_settings_sections( 'github-updater-settings' );
+                      submit_button('Save General Settings'); // Give this button a distinct label
+                  ?>
+                  </form>
+
+                  <hr/>
+
+                  <h2>Manage Installed Plugins</h2>
+                  <p>
+                      <a href="<?php echo admin_url( 'admin.php?action=github_scan_plugins&_wpnonce=' . wp_create_nonce( 'github_scan_nonce' ) ); ?>" class="button button-secondary">
+                          Scan for New Plugins
+                      </a>
+                      <span class="description">Click to check for any recently installed plugins and add them to the configuration list.</span>
+                  </p>
+
+                  <form method="post" action="options.php">
+                      <?php
+                          settings_fields( 'github_updater_option_group' );
+                          // Directly call the method to render the table content
+                          $this->plugin_map_table_callback();
+                          submit_button( 'Save Plugin Configuration' );
+                      ?>
+                  </form>
+              </div>
+              <?php
+          }
 
         ?>
         <div class="wrap">
@@ -104,15 +131,50 @@ class GitHub_Plugin_Updater_Settings {
             'github_updater_main_section'
         );
 
-        // Plugin Map (The table is rendered separately in create_admin_page)
-        add_settings_field(
-            'plugin_map',
-            'Plugin Map Configuration',
-            null, // No direct callback here, rendered in create_admin_page
-            'github-updater-settings',
-            'github_updater_main_section'
-        );
-    }
+        // In includes/class-github-updater-settings.php
+
+        // ... inside page_init() method
+
+                // Register and add settings
+                public function page_init() {
+                    register_setting(
+                        'github_updater_option_group', // Option group
+                        $this->options_name,          // Option name
+                        array( $this, 'sanitize' )    // Sanitize callback
+                    );
+
+                    add_settings_section(
+                        'github_updater_main_section', // ID
+                        'GitHub API and Authentication', // Title
+                        null,                          // Callback (none needed)
+                        'github-updater-settings'      // Page
+                    );
+
+                    // GitHub Authentication Field (KEEP THIS)
+                    add_settings_field(
+                        'github_access_token',
+                        'GitHub Personal Access Token',
+                        array( $this, 'github_access_token_callback' ),
+                        'github-updater-settings',
+                        'github_updater_main_section'
+                    );
+
+                    // ----------------------------------------------------------------
+                    // REMOVE THIS BLOCK (or comment it out)
+                    /*
+                    // Plugin Map (The table is rendered separately in create_admin_page)
+                    add_settings_field(
+                        'plugin_map',
+                        'Plugin Map Configuration',
+                        null, // <-- THIS NULL CAUSED THE FATAL ERROR
+                        'github-updater-settings',
+                        'github_updater_main_section'
+                    );
+                    */
+                    // ----------------------------------------------------------------
+                }
+
+        // ...
 
     /**
      * Sanitizes and saves the options.
