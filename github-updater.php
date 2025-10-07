@@ -103,23 +103,20 @@ class GitHub_Plugin_Updater {
     // to use the access token and transient caching for plugin details.
 }
 
+// ... (Previous code remains the same until the Initialization section)
+
 // --- INITIALIZATION ---
 // Load saved settings and instantiate the updater(s).
 $github_settings = get_option( 'github_updater_options', array() );
 $access_token = isset( $github_settings['github_access_token'] ) ? $github_settings['github_access_token'] : '';
-$plugin_map_raw = isset( $github_settings['plugin_map'] ) ? sanitize_textarea_field( $github_settings['plugin_map'] ) : '';
+$plugin_map = isset( $github_settings['plugin_map'] ) ? (array) $github_settings['plugin_map'] : array();
 
-// Parse the map (one plugin/repo per line)
-$lines = array_filter( array_map( 'trim', explode( "\n", $plugin_map_raw ) ) );
+// $plugin_map is now an associative array: ['plugin-slug/main-file.php' => 'user/repo']
 
-foreach ( $lines as $line ) {
-    // Expected format: plugin-folder/main-file.php|user/repo
-    if ( strpos( $line, '|' ) !== false ) {
-        list( $plugin_file, $repo ) = array_map( 'trim', explode( '|', $line ) );
-
-        // Basic validation: Check if file looks like a plugin file and repo looks like a repo path
-        if ( preg_match( '/^[\w-]+\/[\w-]+\.php$/', $plugin_file ) && preg_match( '/^[\w-]+\/[\w-]+$/', $repo ) ) {
-            new GitHub_Plugin_Updater( $plugin_file, $repo, $access_token );
-        }
+foreach ( $plugin_map as $plugin_file => $repo ) {
+    // Basic validation: Check if file looks like a plugin file and repo looks like a repo path
+    if ( preg_match( '/^[\w-]+\/[\w-]+\.php$/', $plugin_file ) && preg_match( '/^[\w-]+\/[\w-]+$/', $repo ) ) {
+        // Instantiate a new updater object for each configured plugin
+        new GitHub_Plugin_Updater( $plugin_file, $repo, $access_token );
     }
 }

@@ -6,11 +6,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class GitHub_Plugin_Updater_Settings {
 
+    private $options_name = 'github_updater_options';
+
     public function __construct() {
-        // Only run settings logic in the admin area
         if ( is_admin() ) {
             add_action( 'admin_menu', array( $this, 'add_plugin_page' ) );
             add_action( 'admin_init', array( $this, 'page_init' ) );
+            // Action for the 'Scan' button redirect
+            add_action( 'admin_action_github_scan_plugins', array( $this, 'scan_plugins' ) );
         }
     }
 
@@ -19,11 +22,11 @@ class GitHub_Plugin_Updater_Settings {
      */
     public function add_plugin_page() {
         add_options_page(
-            'GitHub Updater Settings', // page_title
-            'GitHub Updater',          // menu_title
-            'manage_options',          // capability
-            'github-updater-settings', // menu_slug
-            array( $this, 'create_admin_page' ) // function
+            'GitHub Updater Settings',
+            'GitHub Updater',
+            'manage_options',
+            'github-updater-settings',
+            array( $this, 'create_admin_page' )
         );
     }
 
@@ -31,17 +34,45 @@ class GitHub_Plugin_Updater_Settings {
      * Options page callback
      */
     public function create_admin_page() {
+        // Check for 'scan' transient which indicates a fresh scan
+        $scanned = get_transient( 'github_updater_scanned' );
+        if ( $scanned ) {
+            delete_transient( 'github_updater_scanned' );
+            ?>
+            <div class="notice notice-info is-dismissible">
+                <p><strong>Plugin list refreshed!</strong> New plugins have been added to the configuration table below.</p>
+            </div>
+            <?php
+        }
+
         ?>
         <div class="wrap">
             <h1>GitHub Plugin Updater Settings</h1>
-            <p>Configure the plugins to be updated directly from their GitHub repositories.</p>
+            <p>Configure which installed plugins should receive updates directly from GitHub.</p>
             <form method="post" action="options.php">
             <?php
-                // This function adds the hidden fields for security (nonce) and options
                 settings_fields( 'github_updater_option_group' );
                 do_settings_sections( 'github-updater-settings' );
                 submit_button();
             ?>
+            </form>
+
+            <hr/>
+
+            <h2>Manage Installed Plugins</h2>
+            <p>
+                <a href="<?php echo admin_url( 'admin.php?action=github_scan_plugins&_wpnonce=' . wp_create_nonce( 'github_scan_nonce' ) ); ?>" class="button button-secondary">
+                    Scan for New Plugins
+                </a>
+                <span class="description">Click to check for any recently installed plugins and add them to the configuration list.</span>
+            </p>
+
+            <form method="post" action="options.php">
+                <?php
+                    settings_fields( 'github_updater_option_group' );
+                    $this->plugin_map_table_callback();
+                    submit_button( 'Save Plugin Configuration' );
+                ?>
             </form>
         </div>
         <?php
@@ -52,56 +83,67 @@ class GitHub_Plugin_Updater_Settings {
      */
     public function page_init() {
         register_setting(
-            'github_updater_option_group', // Option group
-            'github_updater_options',      // Option name
-            array( $this, 'sanitize' )     // Sanitize callback
+            'github_updater_option_group',
+            $this->options_name,
+            array( $this, 'sanitize' )
         );
 
         add_settings_section(
-            'github_updater_main_section', // ID
-            'Configuration',               // Title
-            null,                          // Callback (none needed)
-            'github-updater-settings'      // Page
+            'github_updater_main_section',
+            'GitHub API and Authentication',
+            null,
+            'github-updater-settings'
         );
 
-        // Access Token Field
+        // GitHub Authentication Field
         add_settings_field(
-            'github_access_token',                      // ID
-            'GitHub Personal Access Token',             // Title
-            array( $this, 'github_access_token_callback' ), // Callback
-            'github-updater-settings',                  // Page
-            'github_updater_main_section'               // Section
+            'github_access_token',
+            'GitHub Personal Access Token',
+            array( $this, 'github_access_token_callback' ),
+            'github-updater-settings',
+            'github_updater_main_section'
         );
 
-        // Plugin Mapping Field
+        // Plugin Map (The table is rendered separately in create_admin_page)
         add_settings_field(
-            'plugin_map',                               // ID
-            'Plugin Map (File Path|User/Repo)',         // Title
-            array( $this, 'plugin_map_callback' ),      // Callback
-            'github-updater-settings',                  // Page
-            'github_updater_main_section'               // Section
+            'plugin_map',
+            'Plugin Map Configuration',
+            null, // No direct callback here, rendered in create_admin_page
+            'github-updater-settings',
+            'github_updater_main_section'
         );
     }
 
     /**
-     * Sanitize each setting field as needed. (SECURITY)
-     * @param array $input Contains all settings fields as array keys
+     * Sanitizes and saves the options.
      */
     public function sanitize( $input ) {
-        $new_input = array();
+        $new_input = get_option( $this->options_name, array() );
 
-        // Sanitize Access Token: Remove all tags, keep only basic alphanumeric/symbol characters
+        // 1. Sanitize Access Token
         if ( isset( $input['github_access_token'] ) ) {
             $new_input['github_access_token'] = sanitize_text_field( $input['github_access_token'] );
         }
 
-        // Sanitize Plugin Map: Use a function for multi-line textarea input
-        if ( isset( $input['plugin_map'] ) ) {
-            // Note: We use sanitize_textarea_field but the main plugin logic does extra validation.
-            $new_input['plugin_map'] = sanitize_textarea_field( $input['plugin_map'] );
+        // 2. Sanitize and structure the Plugin Map
+        if ( isset( $input['plugin_map'] ) && is_array( $input['plugin_map'] ) ) {
+            $sanitized_map = array();
+            foreach ( $input['plugin_map'] as $plugin_slug => $repo_url ) {
+                $plugin_slug = sanitize_file_name( $plugin_slug ); // For the file path/slug
+                $repo_url = esc_url_raw( $repo_url ); // Use raw URL sanitization
+
+                // Only save entries that have a valid-looking GitHub URL
+                if ( ! empty( $repo_url ) && preg_match( '/^https:\/\/github\.com\/[\w-]+\/[\w-]+/', $repo_url ) ) {
+                    // Store the 'user/repo' part only for simplicity in the updater logic
+                    $path = parse_url( $repo_url, PHP_URL_PATH );
+                    $repo_path = trim( $path, '/' );
+                    $sanitized_map[ $plugin_slug ] = $repo_path;
+                }
+            }
+            $new_input['plugin_map'] = $sanitized_map;
         }
 
-        // Clear Transients when settings are saved to force an immediate update check
+        // 3. Clear Transients (Security/Performance)
         global $wpdb;
         $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '\_transient\_github\_updater\_latest\_%'" );
         $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '\_transient\_timeout\_github\_updater\_latest\_%'" );
@@ -111,29 +153,126 @@ class GitHub_Plugin_Updater_Settings {
     }
 
     /**
-     * Get the settings option array and print one of its values
+     * Renders the GitHub Access Token input field.
      */
     public function github_access_token_callback() {
-        $options = get_option( 'github_updater_options' );
+        $options = get_option( $this->options_name, array() );
         $token = isset( $options['github_access_token'] ) ? esc_attr( $options['github_access_token'] ) : '';
         printf(
-            '<input type="password" id="github_access_token" name="github_updater_options[github_access_token]" value="%s" size="50" />',
+            '<input type="password" id="github_access_token" name="%s[github_access_token]" value="%s" size="50" autocomplete="off" />',
+            $this->options_name,
             $token
         );
         echo '<p class="description">Required for private repositories and to increase API rate limits. <a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token" target="_blank">Generate a token here</a>.</p>';
     }
 
     /**
-     * Get the settings option array and print the map textarea
+     * Renders the dynamic table for Plugin Mapping.
      */
-    public function plugin_map_callback() {
-        $options = get_option( 'github_updater_options' );
-        $map = isset( $options['plugin_map'] ) ? esc_textarea( $options['plugin_map'] ) : '';
-        printf(
-            '<textarea id="plugin_map" name="github_updater_options[plugin_map]" rows="10" cols="70">%s</textarea>',
-            $map
-        );
-        echo '<p class="description">Enter one plugin per line in the format: <code>plugin-folder/main-file.php|github-user/repo-name</code></p>';
-        echo '<p class="description">Example: <code>my-cool-plugin/my-cool-plugin.php|joedev/cool-repo</code></p>';
+    public function plugin_map_table_callback() {
+        // Ensure plugin.php is loaded for get_plugins()
+        if ( ! function_exists( 'get_plugins' ) ) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+
+        $installed_plugins = get_plugins();
+        $options = get_option( $this->options_name, array() );
+        $saved_map = isset( $options['plugin_map'] ) ? (array) $options['plugin_map'] : array();
+
+        echo '<table class="wp-list-table widefat fixed striped">';
+        echo '<thead><tr>';
+        echo '<th style="width: 40%;">Installed Plugin (Slug)</th>';
+        echo '<th>GitHub Repository URL (e.g., https://github.com/user/repo)</th>';
+        echo '</tr></thead>';
+        echo '<tbody>';
+
+        if ( empty( $installed_plugins ) ) {
+            echo '<tr><td colspan="2">No installed plugins found.</td></tr>';
+        } else {
+            foreach ( $installed_plugins as $plugin_slug => $plugin_data ) {
+                $repo_path = isset( $saved_map[ $plugin_slug ] ) ? $saved_map[ $plugin_slug ] : '';
+                $repo_url = $repo_path ? 'https://github.com/' . $repo_path : '';
+                $plugin_name = esc_html( $plugin_data['Name'] );
+                $plugin_version = esc_html( $plugin_data['Version'] );
+
+                echo '<tr>';
+                // Left Column: Plugin Name and Version/Slug
+                echo '<td>';
+                echo "<strong>{$plugin_name}</strong> (v{$plugin_version})<br/>";
+                echo "<code style='opacity: 0.7;'>{$plugin_slug}</code>";
+                echo '</td>';
+
+                // Right Column: Input Box for GitHub URL
+                echo '<td>';
+                printf(
+                    '<input type="url" name="%s[plugin_map][%s]" value="%s" placeholder="Optional: Enter GitHub URL" class="regular-text" style="width: 100%%;" />',
+                    $this->options_name,
+                    esc_attr( $plugin_slug ),
+                    esc_url( $repo_url )
+                );
+                echo '<p class="description">Leave blank to use the standard WordPress.org update process.</p>';
+                echo '</td>';
+                echo '</tr>';
+
+                // Remove from the saved map list to track what's left over (i.e., removed plugins)
+                if ( isset( $saved_map[ $plugin_slug ] ) ) {
+                    unset( $saved_map[ $plugin_slug ] );
+                }
+            }
+
+            // Display plugins that were in the config but are no longer installed (for removal/cleanup)
+            foreach ( $saved_map as $plugin_slug => $repo_path ) {
+                $repo_url = 'https://github.com/' . $repo_path;
+                echo '<tr style="background-color: #ffeaea;">'; // Highlight removed plugins
+                echo '<td>';
+                echo "<strong>Uninstalled Plugin:</strong> <code style='color: red;'>{$plugin_slug}</code>";
+                echo '</td>';
+
+                echo '<td>';
+                printf(
+                    '<input type="url" name="%s[plugin_map][%s]" value="%s" placeholder="Plugin no longer installed. Clear this field to remove." class="regular-text" style="width: 100%%;" />',
+                    $this->options_name,
+                    esc_attr( $plugin_slug ),
+                    esc_url( $repo_url )
+                );
+                echo '<p class="description" style="color: red;">Plugin not found. Clear the URL above to remove from configuration.</p>';
+                echo '</td>';
+                echo '</tr>';
+            }
+        }
+
+        echo '</tbody></table>';
     }
+
+    /**
+     * Handles the "Scan for New Plugins" action.
+     */
+    public function scan_plugins() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( 'Cheatin&#8217; huh?' );
+        }
+
+        if ( ! isset( $_GET['_wpnonce'] ) || ! wp_verify_nonce( $_GET['_wpnonce'], 'github_scan_nonce' ) ) {
+            wp_die( 'Security check failed.' );
+        }
+
+        // The key is that `get_plugins()` automatically reflects installed plugins.
+        // We just need to force the page to reload and show a message.
+        set_transient( 'github_updater_scanned', true, 5 );
+
+        // Redirect back to the settings page
+        $redirect_url = admin_url( 'options-general.php?page=github-updater-settings' );
+        wp_safe_redirect( $redirect_url );
+        exit;
+    }
+
+    // --- Placeholder for Optional GitHub Account Integration ---
+    /*
+    public function github_repo_selection_callback() {
+        // This is complex and requires:
+        // 1. OAuth flow to connect to the user's GitHub account (not just a token).
+        // 2. AJAX calls to fetch the list of repositories for the connected account.
+        // 3. Rendering a <select> dropdown instead of a text input for selection.
+    }
+    */
 }
